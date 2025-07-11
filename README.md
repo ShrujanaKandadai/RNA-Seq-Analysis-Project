@@ -1,12 +1,23 @@
-# RNA-Seq-Analysis-Project
+# 🧬 RNA-Seq Analysis Project
 Repository for RNA-Seq Analysis of a dataset obtained from Patients infected with Leishmania braziliensis. This dataset was analyzed to understand and recreate the findings created in the original paper referencing this dataset. 
 
 **Analysis status:** [active/completed]  
 **Last updated:** [2025-07-11]
 
-🌐 [Live site](https://shrujanakandadai.github.io/RNA-Seq-Analysis-Project/)
+## 📑 Analysis Report
 
-![report preview](RNA-Seq-Analysis-Project_files/figure-html/step-1.png)
+👉 **[Click here to view the interactive HTML report](https://shrujanakandadai.github.io/RNA-Seq-Analysis-Project/index.html)**
+
+> The report includes:
+> - Data preprocessing & filtering
+> - Differential expression analysis
+> - Gene module detection
+> - Functional enrichment (GO, KEGG)
+> - Heatmaps, volcano plots, and bubble plots
+
+## 🖼️ Preview
+
+[![Report Preview](preview.png)](https://shrujanakandadai.github.io/RNA-Seq-Analysis-Project/index.html)
 
 ## Project Overview
 
@@ -33,6 +44,18 @@ In this analysis, I have worked on recreating the analysis done in the the study
 3. Cytotoxic genes (e.g., GZMB, PRF1) are highly expressed in failure cases.
 4. Pathway analyses reveal immune activation and suppression patterns relevant to disease state. 
 ---
+
+# 📁 Repository Structure
+
+📦 RNA-Seq-Analysis-Project/
+┣ 📄 RNA-Seq-Analysis-Project.Rmd # Main R Markdown analysis file
+┣ 📄 index.html # HTML output of the report
+┣ 📁 RNA-Seq-Analysis-Project_files/ # Figures and assets for HTML
+┣ 📄 README.md # This file
+┗ 📄 preview.png # Screenshot thumbnail (optional)
+
+---
+
 ## References
 Amorim, C. F., Novais, F. O., Nguyen, B. T., Misic, A. M., Carvalho, L. P., Carvalho, E. M., Beiting, D. P., & Scott, P. (2019). Variable gene expression and parasite load predict treatment outcome in cutaneous leishmaniasis. Science translational medicine, 11(519), eaax4204. https://doi.org/10.1126/scitranslmed.aax4204
 
