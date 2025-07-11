@@ -4,6 +4,8 @@ Repository for RNA-Seq Analysis of a dataset obtained from Patients infected wit
 **Analysis status:** [active/completed]  
 **Last updated:** [2025-07-11]
 
+🌐 [Live site](https://shrujanakandadai.github.io/RNA-Seq-Analysis-Project/)
+
 ## Project Overview
 
 In this analysis, I have worked on recreating the analysis done in the the study by [Amorim et al., 2019](https://doi.org/10.1126/scitranslmed.aax4204) Here, I have investigated transcriptomic differences between **HS (healthy skin) vs. CL lesions** using publicly available RNA-seq data from **GSE127831** from the study mentioned. The dataset comprises 28 samples,from human skin biopsies of healthy individuals(n=7) and from lesions of patients infected with Leishmania braziliensis (n=21).This analysis revealed that distinct transcriptional signatures differentiate HS and CL Lesions and that within the CL, gene expression profiles correlate with treatment outcomes (cure vs. failure). Novel additions in my analysis include identification of 5 novel target genes that are highly upregulated in CL compared to HS, and demonstration of cytotoxic genes (e.g., GZMB, PRF1) that are highly expressed in the cases of CL where treatment failure occurred.
