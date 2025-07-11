@@ -44,11 +44,10 @@ In this analysis, I have worked on recreating the analysis done in the the study
 # 📁 Repository Structure
 
 📦 RNA-Seq-Analysis-Project/
-┣ 📄 RNA-Seq-Analysis-Project.Rmd # Main R Markdown analysis file
-┣ 📄 index.html # HTML output of the report
-┣ 📁 RNA-Seq-Analysis-Project_files/ # Figures and assets for HTML
-┣ 📄 README.md # This file
-┗ 📄 preview.png # Screenshot thumbnail (optional)
+📄 RNA-Seq-Analysis-Project.Rmd # Main R Markdown analysis file
+📄 index.html # HTML output of the report
+📁 RNA-Seq-Analysis-Project_files/ # Figures and assets for HTML
+📄 README.md # This file
 
 ---
 
