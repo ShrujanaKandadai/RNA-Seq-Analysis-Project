@@ -1,0 +1,932 @@
+---
+title: "Project-RNA-Seq-Analysis"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(rmarkdown)
+library(tinytex)
+library(knitr)
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, cache = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Introduction
+
+RNA sequencing (RNA-seq) is a powerful technique for quantifying gene expression across the transcriptome. It enables the identification of differentially expressed genes (DEGs), detection of novel transcripts, and characterization of transcript isoforms under various biological conditions.
+
+In this analysis, we investigate transcriptomic differences between **HS vs. CL lesions** using publicly available RNA-seq data from **GSE127831**, which is part of the study by [Amorim et al., 2019](https://doi.org/10.1126/scitranslmed.aax4204). The dataset comprises 28 samples,from human skin biopsies of healthy individuals(n=7) and from lesions of patients infected with Leishmania braziliensis (n=21).
+
+Instead of starting from raw FASTQ files, we retrieved **pre-aligned gene-level expression data** from the **ARCHS4** database. ARCHS4 provides uniformly processed RNA-seq data for human and mouse samples, enabling efficient reuse and reanalysis of public datasets.
+
+Our primary goals are: 
+- To perform quality control and normalization of RNA-seq count data 
+- To identify genes that are significantly differentially expressed between the experimental groups 
+-To interpret biological significance using **gene set enrichment** or **pathway analysis**
+
+We use the **limma-voom** and **edgeR** frameworks for normalization and differential expression analysis, both of which are well-established methods for RNA-seq data with complex experimental designs.
+
+This document provides a reproducible workflow combining code, output, and interpretation. All steps are performed in **R** and rendered using **R Markdown** and the [Knitr package](https://yihui.name/knitr/).
+
+------------------------------------------------------------------------
+
+## R packages used
+
+A variety of R packages was used for this analysis. All graphics and data wrangling were handled using the [tidyverse suite of packages](https://www.tidyverse.org/). All packages used are available from the Comprehensive R Archive Network (CRAN), Bioconductor.org, or Github.
+
+------------------------------------------------------------------------
+
+### Importing count data into R
+
+**Pre-aligned gene-level expression data** from the **ARCHS4** database was retreived for this dataset. ARCHS4 provides uniformly processed RNA-seq data for human and mouse samples, enabling efficient reuse and reanalysis of public datasets.
+
+```{r step 1 - retreiving data from ARCHS4}
+library(tidyverse)#for data wrangling
+library(rhdf5)#for retreiving data from ARCHS4 database
+library(edgeR)#for DGE analysis
+library(gplots)#for heatmap.2
+library(enrichplot)
+
+archs4.human <- "human_gene_v2.latest.h5"
+# use the h5 list (h5ls) function from the rhdf5 package to look at the contents of these databases
+hdim <- h5ls(archs4.human)
+
+# data for 67,186 HUMAN genes across 819,856 samples
+all.samples.human <- h5read(archs4.human, name="meta/samples/geo_accession")
+dim(all.samples.human)
+
+#the sample identifiers are obtained from the GEO database for GSE 127831
+mySamples <- c( "GSM3639530",	 #skin_HS1
+               "GSM3639531",	#skin_HS2
+               "GSM3639532",	#skin_HS3
+               "GSM3639533",	#skin_HS4
+               "GSM3639534",	#skin_HS5
+               "GSM3639535",	#skin_HS6
+               "GSM3639536",	#skin_HS7
+               "GSM3639537",	#skin_CL1
+               "GSM3639538",	#skin_CL2
+               "GSM3639539",	#skin_CL3
+               "GSM3639540",	#skin_CL4
+               "GSM3639541",	#skin_CL5
+               "GSM3639542",	#skin_CL6
+               "GSM3639543",	#skin_CL7
+               "GSM3639544",	#skin_CL8
+               "GSM3639545",	#skin_CL9
+               "GSM3639546",	#skin_CL10
+               "GSM3639547",	#skin_CL11
+               "GSM3639548",	#skin_CL12
+               "GSM3639549",	#skin_CL13
+               "GSM3639550",	#skin_CL14
+               "GSM3639551",	#skin_CL15
+               "GSM3639552",	#skin_CL16
+               "GSM3639553",	#skin_CL17
+               "GSM3639554",	#skin_CL18
+               "GSM3639555",	#skin_CL19
+               "GSM3639556",	#skin_CL20
+               "GSM3639557")	#skin_CL21
+               
+# Identify columns to be extracted from ARCHS4 database
+my.sample.locations <- which(all.samples.human %in% mySamples) # first time you've seen the %in% operator.
+
+# extract gene symbols from the metadata
+genes <- h5read(archs4.human, "meta/genes/symbol")
+
+# Extract expression data from ARCHS4 ----
+expression <- h5read(archs4.human, "data/expression",
+                     index=list(my.sample.locations, NULL))
+# transpose to get genes as rows and samples as columns
+expression <- t(expression)
+
+rownames(expression) <- genes
+colnames(expression) <- all.samples.human[my.sample.locations]
+colSums(expression) #this shows the sequencing depth for each of the samples you've extracted
+archs4.dgelist <- DGEList(expression)
+archs4.cpm <- cpm(archs4.dgelist)
+colSums(archs4.cpm)
+```
+
+------------------------------------------------------------------------
+
+## Preprocessing
+
+### Impact of filtering and normalization
+
+```{r step2 - dataWrangling}
+
+table(rowSums(archs4.dgelist$counts==0)==28)
+keepers <- rowSums(archs4.cpm>1)>=7
+archs4.dgelist.filtered <- archs4.dgelist[keepers,]
+dim(archs4.dgelist.filtered)
+archs4.dgelist.filtered.norm <- calcNormFactors(archs4.dgelist.filtered, method = "TMM")
+
+archs4.filtered.norm.log2.cpm <- cpm(archs4.dgelist.filtered.norm, log=TRUE)
+
+# Extract sample metadata from ARCHS4 to create a study design file ----
+# extract the sample source
+sample_source_name <- h5read(archs4.human, "meta/samples/source_name_ch1")
+# extract sample title
+sample_title <- h5read(archs4.human, name="meta/samples/title")
+# extract sample characteristics
+sample_characteristics<- h5read(archs4.human, name="meta/samples/characteristics_ch1")
+
+# let's try putting this all together in a study design file
+studyDesign <- tibble(Sample_title = sample_title[my.sample.locations],
+                      Sample_source = sample_source_name[my.sample.locations],
+                      Sample_characteristics = sample_characteristics[my.sample.locations])
+
+#based on what we extracted from ARCHS4 above, lets customize and clean-up this study design file
+studyDesign <- tibble(Sample_title = sample_title[my.sample.locations],
+                      genotype = rep(c("HS", "CL"), times= c(7,21)),
+                      treatment = rep(c("NInf", "Inf"), times= c(7,21)))
+
+#capture experimental variables as factors from this study design
+genotype <- factor(studyDesign$genotype)
+treatment <- factor(studyDesign$treatment)
+sampleName <- studyDesign$Sample_title
+
+```
+
+Filtering was carried out to remove lowly expressed genes. Genes with less than 1 count per million (CPM) in at least 7 or more samples filtered out.  This reduced the number of genes from `r nrow(archs4.dgelist)` to `r nrow(archs4.dgelist.filtered)`.  
+
+------------------------------------------------------------------------
+
+### table of filtered and normalized data
+
+```{r step 3 - multivariate part 1 (data table)}
+
+library(tidyverse)
+library(DT)
+
+# use dplyr 'mutate' function to add new columns based on existing data
+targets <- read_tsv("GSE127831_studydesign.txt")
+sampleLabels <- targets$sample
+colnames(archs4.filtered.norm.log2.cpm) <- c(sampleLabels)
+archs4.filtered.norm.log2.cpm.df <- as_tibble(archs4.filtered.norm.log2.cpm, rownames = "geneID")
+archs4.filtered.norm.log2.cpm.df
+mydata.df <- archs4.filtered.norm.log2.cpm.df %>% 
+  mutate(healthy.AVG = (HS1 + HS2 + HS3 + HS4 + HS5 + HS6 +HS7)/7,
+         disease.AVG = (CL1 + CL2 + CL3 + CL4 + CL5 + CL6 + CL7 + CL8 + CL9 + CL10 + CL11 + CL12 + CL13 + CL14 + CL15 + CL16 + CL17 + CL18 + CL19 + CL20 + CL21)/21,
+         #now make columns comparing each of the averages above that you're interested in
+         LogFC = (disease.AVG - healthy.AVG)) %>% 
+  mutate_if(is.numeric, round, 2)
+
+#now look at this modified data table
+mydata.df
+
+datatable(mydata.df[,c(1,30:32)], 
+          extensions = c('KeyTable', "FixedHeader"), 
+          filter = 'top',
+          options = list(keys = TRUE, 
+                         searchHighlight = TRUE, 
+                         pageLength = 10, 
+                         lengthMenu = c("10", "25", "50", "100")))
+
+```
+
+The table shown below includes expression data for `r nrow(archs4.dgelist.filtered)` genes. You can sort and search the data directly from the table.
+
+------------------------------------------------------------------------
+
+## PCA plot
+
+```{r step 3 - multivariate part 2 (PCA plot)}
+library(plotly)
+
+# Principal component analysis (PCA) -------------
+pca.res <- prcomp(t(archs4.filtered.norm.log2.cpm), scale.=F, retx=T)
+#look at pca.res in environment
+ls(pca.res)
+summary(pca.res) # Prints variance summary for all principal components.
+pc.var<-pca.res$sdev^2 #sdev^2 gives you the eigenvalues
+pc.per<-round(pc.var/sum(pc.var)*100, 1)
+pc.per
+
+# Visualize your PCA result ------------------
+#lets first plot any two PCs against each other
+#We know how much each sample contributes to each PC (loadings), so let's plot
+pca.res.df <- as_tibble(pca.res$x)
+pca.plot <- ggplot(pca.res.df) +
+  aes(x=PC1, y=PC2, color=treatment, shape = genotype) +
+  geom_point(size=4) +
+  #geom_label() +
+  # stat_ellipse() +
+  xlab(paste0("PC1 (",pc.per[1],"%",")")) +
+  ylab(paste0("PC2 (",pc.per[2],"%",")")) +
+  labs(title="PCA plot",
+       caption=paste0("produced on ", Sys.time())) +
+  coord_fixed() +
+  theme_bw()
+
+ggplotly(pca.plot)
+```
+
+***
+
+## Volcano plot
+
+```{r step 5 - diffGenes part 1 (volcano plot)}
+#reading in the study design file 
+design <- read.csv(gzfile("GSE127831_studydesign.csv.gz"))
+write.table(design, "GSE127831_studydesign.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+#HS vs. CL lesions as a factor 
+disease <- factor(targets$disease)
+
+#preparing a model matrix for CL vs HS 
+design1 <- model.matrix(~0 + disease)
+colnames.design1 <- levels(disease)
+
+# Model mean-variance trend and fit linear model to data ----
+# Use VOOM function from Limma package to model the mean-variance relationship
+v.DEGList.filtered.norm <- voom(archs4.dgelist.filtered.norm, design1, plot = TRUE)
+# fit a linear model to your data
+fit <- lmFit(v.DEGList.filtered.norm, design1)
+
+# Contrast matrix ----
+contrast.matrix.disease <- makeContrasts("infection vs. control"= diseasecutaneous - diseasecontrol,
+                                           levels=design1)
+
+# extract the linear model fit -----
+fits <- contrasts.fit(fit, contrast.matrix.disease)
+#get bayesian stats for your linear model fit
+ebFit <- eBayes(fits)
+#write.fit(ebFit, file="lmfit_results.txt")
+
+# TopTable to view DEGs -----
+myTopHits <- topTable(ebFit, adjust ="BH", coef=1, number=40000, sort.by="logFC")
+
+# convert to a tibble
+myTopHits.df <- myTopHits %>%
+  as_tibble(rownames = "geneID")
+
+# now plot
+vplot <- ggplot(myTopHits.df) +
+  aes(y=-log10(adj.P.Val), x=logFC, text = paste("Symbol:", ID)) +
+  geom_point(size=2) +
+  geom_hline(yintercept = -log10(0.01), linetype="longdash", colour="grey", linewidth=1) +
+  geom_vline(xintercept = 1, linetype="longdash", colour="#BE684D", linewidth=1) +
+  geom_vline(xintercept = -1, linetype="longdash", colour="#2C467A", linewidth=1) +
+  annotate("rect", xmin = 1, xmax = 12, ymin = -log10(0.01), ymax = 7.5, alpha=.2, fill="#BE684D") +
+  annotate("rect", xmin = -1, xmax = -12, ymin = -log10(0.01), ymax = 7.5, alpha=.2, fill="#2C467A") +
+  labs(title="Volcano plot",
+       subtitle = "Cutaneous leishmaniasis",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw()
+
+ggplotly(vplot)
+```
+
+***
+## Table of DEGs
+
+To identify differentially expressed genes, precision weights were first applied to each gene based on its mean-variance relationship using [VOOM](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29), then data was normalized using the [TMM method](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2010-11-3-r25) in [EdgeR](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2796818/).  Linear modeling and bayesian stats were employed via [Limma](https://academic.oup.com/nar/article/43/7/e47/2414268) to find genes that were up- or down-regulated in leishmania patients by 4-fold or more, with a false-discovery rate (FDR) of 0.01. 
+
+```{r step 5 - diffGenes part 2 (DEG table)}
+#extract the DEGs
+results <- decideTests(ebFit, method="global", adjust.method="BH", p.value=0.01, lfc=1)
+sampleLabels <- targets$sample
+head(v.DEGList.filtered.norm$E)
+colnames(v.DEGList.filtered.norm$E) <- sampleLabels
+
+diffGenes <- v.DEGList.filtered.norm$E[results[,1] !=0,]
+head(diffGenes)
+dim(diffGenes)
+#convert your DEGs to a dataframe using as_tibble
+diffGenes.df <- as_tibble(diffGenes, rownames = "geneID")
+datatable(diffGenes.df, 
+          extensions = c('KeyTable', "FixedHeader"), 
+          caption = 'Table 1: DEGs in cutaneous leishmaniasis',
+          options = list(keys = TRUE, searchHighlight = TRUE, pageLength = 10, lengthMenu = c("10", "25", "50", "100"))) %>%
+  formatRound(columns=c(2:11), digits=2)
+```
+
+***
+
+## Heatmaps and modules
+
+Pearson correlation was used to cluster **`r nrow(diffGenes)`** differentially expressed genes, which were then represented as heatmap with the data scaled by Zscore for each row.
+
+```{r step 6 - modules part 1 (heatmap)}
+#clustering - using unsupervised method: correlation
+clustRows <- hclust(as.dist(1-cor(t(diffGenes), method="pearson")), method="complete") 
+clustColumns <- hclust(as.dist(1-cor(diffGenes, method="spearman")), method="complete")
+
+#we'll look at these clusters in more detail later
+module.assign <- cutree(clustRows, k=2)
+
+#now assign a color to each module (makes it easy to identify and manipulate)
+module.color <- rainbow(length(unique(module.assign)), start=0.1, end=0.9) 
+module.color <- module.color[as.vector(module.assign)] 
+myheatcolors2 <- colorRampPalette(c("purple", "white", "darkgreen"))(50)
+myheatcolors1 <- bluered(75)
+# Produce a static heatmap of DEGs ----
+#plot the hclust results as a heatmap
+heatmap.2(diffGenes, 
+          Rowv=as.dendrogram(clustRows), 
+          Colv=as.dendrogram(clustColumns),
+          RowSideColors=module.color,
+          col=rev(myheatcolors1), scale='row', labRow=rownames(diffGenes),
+          density.info="none", trace="none",  
+          cexRow = 0.8,                         # Slightly smaller gene labels
+          cexCol = 0.7,                         # Smaller column labels
+          srtCol = 45,                          # Rotate column labels
+          adjCol = c(1, 1),                     # Right-justify rotated labels
+          offsetCol = 0.5,                      # Better spacing
+          margins = c(10, 20))                  # Increase bottom margin) 
+
+```
+
+***
+
+```{r step 6 - modules part 2 }
+# View modules of co-regulated genes ----
+# view your color assignments for the different clusters
+names(module.color) <- names(module.assign) 
+
+module.assign.df <- tibble(
+  geneID = names(module.assign),
+  module = as.vector(module.assign)
+)
+
+module.assign.df <- module.assign.df %>%
+  mutate(moduleColor = case_when(
+    module == 1 ~ "#FF9900",
+    module == 2 ~ "#FF0099"))
+
+
+ggplot(module.assign.df) +
+  aes(module) +
+  geom_bar(aes(fill=moduleColor)) +
+  theme_bw()
+
+```
+
+***
+
+```{r step 6 - modules part 3 (upregulated genes)}
+
+#choose a cluster(s) of interest by selecting the corresponding number based on the previous graph
+modulePick <- 2 #use 'c()' to grab more than one cluster from the heatmap.  e.g., c(1,2)
+#now we pull out the genes from this module using a fancy subsetting operation on a named vector
+myModule <- diffGenes[names(module.assign[module.assign %in% modulePick]),] 
+hrsub <- hclust(as.dist(1-cor(t(myModule), method="pearson")), method="complete") 
+
+# Create heatmap for chosen sub-cluster.
+heatmap.2(myModule, 
+          Rowv=as.dendrogram(hrsub), 
+          Colv=NA, 
+          labRow = NA,
+          col=rev(myheatcolors1), scale="row", 
+          density.info="none", trace="none", 
+          RowSideColors=module.color[module.assign%in%modulePick], 
+          cexRow = 0.8,                         # Slightly smaller gene labels
+          cexCol = 0.7,                         # Smaller column labels
+          srtCol = 45,                          # Rotate column labels
+          adjCol = c(1, 1),                     # Right-justify rotated labels
+          offsetCol = 0.5,                      # Better spacing
+          margins = c(10, 20))                  # Increase bottom margin) 
+
+```
+
+***
+
+```{r step 6 - modules part 4 (downregulated genes)}
+modulePick <- 1 
+myModule_down <- diffGenes[names(module.assign[module.assign %in% modulePick]),] 
+hrsub_down <- hclust(as.dist(1-cor(t(myModule_down), method="pearson")), method="complete") 
+
+heatmap.2(myModule_down, 
+          Rowv=as.dendrogram(hrsub_down), 
+          Colv=NA, 
+          labRow = NA,
+          col=rev(myheatcolors1), scale="row", 
+          density.info="none", trace="none", 
+          RowSideColors=module.color[module.assign%in%modulePick],
+          cexRow = 0.8,                         # Slightly smaller gene labels
+          cexCol = 0.7,                         # Smaller column labels
+          srtCol = 45,                          # Rotate column labels
+          adjCol = c(1, 1),                     # Right-justify rotated labels
+          offsetCol = 0.5,                      # Better spacing
+          margins = c(10, 20))                  # Increase bottom margin
+```
+
+***
+```{r step 6 - modules part 5 (heatmap of Top 100 genes upregulated in CL vs. HS)}
+sortedupFC <- myTopHits[order(-myTopHits$logFC),]
+sortedupFC <- sortedupFC[!duplicated(sortedupFC$ID) & !is.na(sortedupFC$ID), ]  # avoid duplicates
+rownames(sortedupFC) <- sortedupFC$ID
+sorteduptop <- sortedupFC[-grep("IG", sortedupFC$ID),]
+#Top 100 genes upregulated:
+top100up <- sorteduptop[1:100,]$ID
+TopUPtable100 <- archs4.filtered.norm.log2.cpm[c(top100up),]
+TopUPmatrixcoding100 <- as.matrix(TopUPtable100)
+colormapX <- colorRampPalette(colors=c("darkgreen","white","purple"))(50)
+HeatmapUP100 <- heatmap.2(TopUPmatrixcoding100,
+                          scale = "row", key=TRUE,
+                          keysize = 1, key.title = NA,
+                          col=colormapX, dendrogram = "none", Rowv = F,
+                          margins=c(5,25),
+                          labCol = NA, labRow = rownames(TopUPtable100),
+                          main = "",
+                          density.info="none", trace="none",
+                          cexRow=0.8, cexCol=1)
+# Save heatmap of top 100 upregulated coding genes to PNG file
+png("Top100_UP_heatmap.png", width=1200, height=1800) #width/height in pixels
+heatmap.2(TopUPmatrixcoding100,
+          scale = "row", key=TRUE,
+          keysize = 1, key.title = NA,
+          col=colormapX, dendrogram = "none", Rowv = F,
+          margins=c(5,25),
+          labCol = NA, labRow = rownames(TopUPmatrixcoding100),
+          main = "",
+          density.info="none", trace="none",
+          cexRow=0.7, cexCol=1)
+dev.off()
+
+```
+
+## GO enrichment
+
+GO enrichment for the `r nrow(myModule)` genes induced by infection
+
+```{r step 7 - functionalEnrichment part 1 (gostplot for upregulated genes)}
+library(tidyverse)
+library(limma)
+library(gplots) #for heatmaps
+library(DT) #interactive and searchable tables of our GSEA results
+library(GSEABase) #functions and methods for Gene Set Enrichment Analysis
+library(Biobase) #base functions for bioconductor; required by GSEABase
+library(gprofiler2) #tools for accessing the GO enrichment results using g:Profiler web resources
+library(clusterProfiler) # provides a suite of tools for functional enrichment analysis
+library(msigdbr) # access to msigdb collections directly within R
+library(enrichplot) # great for making the standard GSEA enrichment plots
+gost.res_up <- gost(rownames(myModule), organism = "hsapiens", correction_method = "fdr")
+gostplot(gost.res_up, interactive = T, capped = T) #set interactive=FALSE to get plot for publications
+
+```
+
+GO enrichment for the `r nrow(myModule_down)` genes downregulated due to infection
+
+```{r step 7 - functionalEnrichment part 2 (gostplot for downregulated genes)}
+gost.res_down <- gost(rownames(myModule_down), organism = "hsapiens", correction_method = "fdr")
+gostplot(gost.res_down, interactive = T, capped = T) #set interactive=FALSE to get plot for publications
+```
+
+## GSEA
+
+```{r step 7 - functionalEnrichment part 3 (GSEA table)}
+msigdbr_species()
+hs_gsea <- msigdbr(species = "Homo sapiens") #gets all collections/signatures with human gene IDs
+#take a look at the categories and subcategories of signatures available to you
+hs_gsea %>%
+  dplyr::distinct(gs_collection, gs_subcollection) %>%
+  dplyr::arrange(gs_collection, gs_subcollection)
+
+# choose a specific msigdb collection/subcollection
+# since msigdbr returns a tibble, we'll use dplyr to do a bit of wrangling
+hs_gsea_c2 <- msigdbr(species = "Homo sapiens", # change depending on species your data came from
+                      category = "C2") %>% # choose your msigdb collection of interest
+  dplyr::select(gs_name, gene_symbol) #just get the columns corresponding to signature name and gene symbols of genes in each signature
+
+# Now that you have your msigdb collections ready, prepare your data
+# grab the dataframe you made in and pull out just the columns corresponding to gene symbols and LogFC for at least one pairwise comparison for the enrichment analysis
+# Pull out just the columns corresponding to gene symbols and LogFC for at least one pairwise comparison for the enrichment analysis
+mydata.df.sub <- dplyr::select(mydata.df, geneID, LogFC)
+# construct a named vector
+mydata.gsea <- mydata.df.sub$LogFC
+names(mydata.gsea) <- as.character(mydata.df.sub$geneID)
+mydata.gsea <- sort(mydata.gsea, decreasing = TRUE)
+mydata.gsea <- mydata.gsea[!duplicated(names(mydata.gsea))]
+# run GSEA using the 'GSEA' function from clusterProfiler
+set.seed(123) #set a random seed so that we can reproducible ordering for our GSEA results below
+myGSEA.res <- GSEA(mydata.gsea, TERM2GENE=hs_gsea_c2, verbose=FALSE) #could replace C2CP with hs_gsea_c2 object you retrieved from msigdb above
+myGSEA.df <- as_tibble(myGSEA.res@result) #using @ symbol - a slot in an S4 class object
+
+# view results as an interactive table
+datatable(myGSEA.df,
+          extensions = c('KeyTable', "FixedHeader"),
+          caption = 'Signatures enriched in leishmaniasis',
+          options = list(keys = TRUE, searchHighlight = TRUE, pageLength = 10, lengthMenu = c("10", "25", "50", "100"))) %>%
+  formatRound(columns=c(2:10), digits=2)
+```
+
+```{r step 7 - functionalEnrichment part 4 (enrich plot)}
+
+# create enrichment plots using the enrichplot package
+gseaplot2(myGSEA.res,
+          geneSetID = c(94,91), #can choose multiple signatures to overlay in this plot
+          pvalue_table = FALSE, #can set this to FALSE for a cleaner plot
+          #title = myGSEA.res$Description[c(94,90)]
+) #can also turn off this title
+
+```
+
+```{r step 7 - functionalEnrichment part 4 (bubble plot)}
+
+# add a variable to this result that matches enrichment direction with phenotype
+myGSEA.df <- myGSEA.df %>%
+  mutate(phenotype = case_when(
+    NES > 0 ~ "disease",
+    NES < 0 ~ "healthy"))
+
+# create 'bubble plot' to summarize y signatures across x phenotypes
+myGSEA.sig <- myGSEA.df %>% 
+       filter(p.adjust < 0.01)
+ 
+# Get top 10 pathways per phenotype
+top_10_each <- myGSEA.sig %>%
+       group_by(phenotype) %>%
+       arrange(p.adjust) %>%
+       slice_head(n = 10)
+# Now: get unique pathways (to keep common y-axis)
+top_IDs <- unique(top_10_each$ID)
+# Subset full data for those IDs (to get both phenotypes for each)
+top_df <- myGSEA.df %>%
+       filter(ID %in% top_IDs)
+ 
+# Optional: shorten pathway names for display
+top_df$ID <- gsub("REACTOME_", "", top_df$ID)
+top_df$ID <- gsub("_", " ", top_df$ID)
+
+# Plot
+  ggplot(top_df, aes(x = phenotype, y = ID)) +
+       geom_point(aes(size = setSize, color = NES, alpha = -log10(p.adjust))) +
+      scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+      scale_alpha(range = c(0.4, 1)) +
+      theme_bw() +
+      labs(
+             title = "Top GSEA Pathways by Phenotype",
+              x = "Phenotype", y = "Pathway"
+       ) +
+      theme(
+             axis.text.y = element_text(size = 7),
+             axis.text.x = element_text(size = 10),
+            plot.title = element_text(hjust = 0.5)
+)
+
+```
+
+***
+## Variability in gene expression
+
+```{r step 8 - identifying highly variable gene expression signatures in CL lesions Part 1 }
+# Identification of highly variable gene expression signatures in CL lesions.
+  exprs_voom <- v.DEGList.filtered.norm$E
+  # 1. Get group-wise means
+  group_means <- data.frame(
+    gene = rownames(exprs_voom),
+    disease_mean = rowMeans(exprs_voom[, targets$disease == "cutaneous"]),
+    healthy_mean = rowMeans(exprs_voom[, targets$disease == "control"])
+  )
+
+  # 2. Compute log2 fold change
+  group_means$logFC <- group_means$disease_mean - group_means$healthy_mean
+  
+  
+  # 3. Filter for genes:
+  # - high disease expression (e.g. > 5)
+  # - low healthy expression (e.g. < 1)
+  # - large FC (e.g. logFC > 4)
+  filtered_genes <- group_means %>%
+    filter(disease_mean > 5, healthy_mean < 1, logFC > 4) %>%
+    arrange(desc(logFC))
+  
+  # View top candidates
+  head(filtered_genes, 10)
+  
+  #removing the genes that start with "IG" to identify other differentially expressed genes that can be potential treatment targets 
+  # Remove genes that start with "IG"
+  filtered_genes_noIG <- filtered_genes %>% filter(!str_detect(gene,"^IG"))
+  
+  #subset the expression matrix for genes of interest
+  # Keep only the first matching row for each gene
+  top5_genes <- head(filtered_genes_noIG, 5)
+  expr_subset <- exprs_voom[rownames(exprs_voom) %in% top5_genes$gene, ]
+  
+  # Step 3: Convert to long format
+  df_long <- as.data.frame(expr_subset) %>%
+    rownames_to_column(var = "gene") %>%
+    pivot_longer(-gene, names_to = "sample", values_to = "expression")
+  
+  # Step 4: Add sample metadata
+  df_long <- df_long %>%
+    left_join(targets, by = "sample")
+  
+  fc_table <- df_long %>%
+    group_by(gene, disease) %>%
+    summarise(mean_expr = mean(expression), .groups = "drop") %>%
+    pivot_wider(names_from = disease, values_from = mean_expr) %>%
+    mutate(log2FC = cutaneous - control,
+           FC = round(2^log2FC)) %>%
+    arrange(desc(FC))  # Optional: sort
+  
+  fc_labels <- paste0("FC ", fc_table$FC)
+  
+  label_df <- df_long %>%
+    filter(disease == "cutaneous") %>%
+    group_by(gene) %>%
+    summarise(y = max(expression) + 0.5) %>%
+    mutate(label = fc_labels)
+  
+  pd <- position_dodge(width = 0.75)
+  ggplot(df_long, aes(x = gene, y = expression, fill = disease)) +
+    # Boxplot with consistent width and dodge
+    geom_boxplot(position = pd, outlier.shape = NA, alpha = 0.8, width = 0.5, color = "black") +
+    
+    # Jitter points, aligned using jitterdodge
+    geom_jitter(aes(color = disease),
+                size = 1.8, alpha = 0.7,
+                position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)) +
+    
+    # FC labels above the boxes
+    geom_text(data = label_df, aes(x = gene, y = y, label = label),
+              inherit.aes = FALSE,
+              vjust = -0.5, size = 4.5, fontface = "bold") +
+    
+    # Color & fill mapping
+    scale_fill_manual(values = c("control" = "gray30", "cutaneous" = "red")) +
+    scale_color_manual(values = c("control" = "gray30", "cutaneous" = "red")) +
+    
+    # Labels and theme settings
+    labs(y = "CPM (log2 scale)", x = NULL) +
+    geom_hline(yintercept = 0, linetype = "dotted", color = "gray30") +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = "right",
+      legend.title = element_blank(),
+      axis.text.x = element_text(face = "italic", size = 13),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.title.y = element_text(size = 14, face = "bold")
+    ) +
+    labs( title = "Top 5 most variable gene expression in CL vs. HS")
+```
+
+```{r step 9 - identifying highly variable gene expression signatures in CL lesions Part 2 }
+
+expr_matrix <- v.DEGList.filtered.norm$E
+# Define list of known cytotoxicity genes
+    cytotoxic_genes <- c("GZMA", "GZMB", "PRF1", "NKG7", "GNLY", 
+                        "CD8A", "CD8B", "FASLG", "IFNG", "TNF", 
+                         "KLRK1", "CASP3", "BID", "IL2", "TRAIL","IL1B")
+  
+# Subset those present in your filtered gene list
+    cytotoxic_targets <- filtered_genes_noIG %>%
+                    filter(gene %in% cytotoxic_genes)
+
+# View them sorted by logFC (descending)
+    cytotoxic_targets <- cytotoxic_targets %>%
+           arrange(desc(logFC))
+    top5_cytotoxic_genes <- cytotoxic_targets %>%
+           arrange(desc(logFC)) %>%
+           slice(1:5) %>%
+           pull(gene)
+
+    expr_subset_cyto <- expr_matrix[rownames(expr_matrix) %in% top5_cytotoxic_genes, ] 
+  
+    df_long_cyto <- as.data.frame(expr_subset_cyto) %>%
+           rownames_to_column(var = "gene") %>%
+           pivot_longer(-gene, names_to = "sample", values_to = "expression")
+  
+    # Step 4: Add sample metadata
+    df_long_cyto <- df_long_cyto %>%
+      left_join(targets, by = "sample")
+    
+    # Calculate mean expression per gene per group
+    fc_table_cyto <- df_long_cyto %>%
+           group_by(gene, disease) %>%
+           summarise(mean_expr = mean(expression), .groups = "drop") %>%
+           pivot_wider(names_from = disease, values_from = mean_expr) %>%
+           mutate(log2FC = cutaneous - control,
+                               FC = round(2^log2FC)) %>%
+           arrange(desc(FC))  # Optional: sort
+    
+    fc_labels_cyto <- paste0("FC ", fc_table_cyto$FC)
+    label_df_cyto <- df_long_cyto %>%
+           filter(disease == "cutaneous") %>%
+           group_by(gene) %>%
+           summarise(y = max(expression) + 0.5) %>%
+           mutate(label = fc_labels_cyto)
+  
+    pd <- position_dodge(width = 0.75)
+    ggplot(df_long_cyto, aes(x = gene, y = expression, fill = disease)) +
+          # Boxplot with consistent width and dodge
+           geom_boxplot(position = pd, outlier.shape = NA, alpha = 0.8, width = 0.5, color = "black") +
+           
+           # Jitter points, aligned using jitterdodge
+           geom_jitter(aes(color = disease),
+                       size = 1.8, alpha = 0.7,
+                      position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)) +
+           
+           # FC labels above the boxes
+           geom_text(data = label_df_cyto, aes(x = gene, y = y, label = label),
+                                     inherit.aes = FALSE,
+                                     vjust = -0.5, size = 4.5, fontface = "bold") +
+           
+           # Color & fill mapping
+           scale_fill_manual(values = c("control" = "gray30", "cutaneous" = "red")) +
+           scale_color_manual(values = c("control" = "gray30", "cutaneous" = "red")) +
+           
+           # Labels and theme settings
+           labs(y = "CPM (log2 scale)", x = NULL) +
+           geom_hline(yintercept = 0, linetype = "dotted", color = "gray30") +
+           theme_minimal(base_size = 14) +
+           theme(
+                 legend.position = "right",
+                 legend.title = element_blank(),
+               axis.text.x = element_text(face = "italic", size = 13),
+                 panel.grid.major.x = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 axis.title.y = element_text(size = 14, face = "bold")
+             )+
+    labs( title = "Top 5 most variable cytotoxic genes expressed in CL vs. HS")
+```
+
+```{r step 10 - identifying highly variable gene expression signatures in CL lesions Part 2 }
+# Identify columns to be extracted from ARCHS4 database
+my.sample.locations1 <- which(all.samples.human %in% mySamples[8:28]) # first time you've seen the %in% operator.
+
+# extract gene symbols from the metadata
+genes <- h5read(archs4.human, "meta/genes/symbol")
+
+# Extract expression data from ARCHS4 ----
+expression1 <- h5read(archs4.human, "data/expression",
+                     index=list(my.sample.locations1, NULL))
+# transpose to get genes as rows and samples as columns
+expression1 <- t(expression1)
+
+rownames(expression1) <- genes
+colnames(expression1) <- all.samples.human[my.sample.locations1]
+colSums(expression1) #this shows the sequencing depth for each of the samples you've extracted
+archs4.dgelist_outcomes <- DGEList(expression1)
+archs4.cpm_outcomes <- cpm(archs4.dgelist_outcomes)
+colSums(archs4.cpm_outcomes)
+
+# Filter and normalize the extracted data ----
+table(rowSums(archs4.dgelist_outcomes$counts==0)==21)
+keepers1 <- rowSums(archs4.cpm_outcomes>1)>=7
+archs4.dgelist.filtered_outcomes <- archs4.dgelist_outcomes[keepers1,]
+dim(archs4.dgelist.filtered_outcomes)
+archs4.dgelist.filtered.norm_outcomes <- calcNormFactors(archs4.dgelist.filtered_outcomes, method = "TMM")
+
+archs4.filtered.norm.log2.cpm_outcomes <- cpm(archs4.dgelist.filtered.norm_outcomes, log=TRUE)
+
+# Extract sample metadata from ARCHS4 to create a study design file ----
+# extract the sample source
+sample_source_name <- h5read(archs4.human, "meta/samples/source_name_ch1")
+# extract sample title
+sample_title <- h5read(archs4.human, name="meta/samples/title")
+# extract sample characteristics
+sample_characteristics<- h5read(archs4.human, name="meta/samples/characteristics_ch1")
+
+# let's try putting this all together in a study design file
+studyDesign <- tibble(Sample_title = sample_title[my.sample.locations],
+                      Sample_source = sample_source_name[my.sample.locations],
+                      Sample_characteristics = sample_characteristics[my.sample.locations])
+
+#based on what we extracted from ARCHS4 above, lets customize and clean-up this study design file
+studyDesign <- tibble(Sample_title = sample_title[my.sample.locations],
+                      genotype = rep(c("HS", "CL"), times= c(7,21)),
+                      treatment = rep(c("NInf", "Inf"), times= c(7,21)))
+
+#capture experimental variables as factors from this study design
+genotype <- factor(studyDesign$genotype)
+treatment <- factor(studyDesign$treatment)
+sampleName <- studyDesign$Sample_title
+
+targets.onlypatients <- targets[8:28,]
+
+#failure vs cure as a factor 
+outcome <- factor(targets.onlypatients$Treat..outcome)
+
+#preparing a model matrix for CL vs HS 
+design1 <- model.matrix(~0 + outcome)
+colnames.design1 <- levels(outcome)
+
+# Model mean-variance trend and fit linear model to data ----
+# Use VOOM function from Limma package to model the mean-variance relationship
+v.DEGList.filtered.norm_outcomes <- voom(archs4.dgelist.filtered.norm_outcomes, design1, plot = TRUE)
+# fit a linear model to your data
+fit1 <- lmFit(v.DEGList.filtered.norm_outcomes, design1)
+
+# Contrast matrix ----
+contrast.matrix.outcomes <- makeContrasts("failure vs. cure"= outcomefailure - outcomecure,
+                                         levels=design1)
+
+# extract the linear model fit -----
+fits1 <- contrasts.fit(fit1, contrast.matrix.outcomes)
+#get bayesian stats for your linear model fit
+ebFit1 <- eBayes(fits1)
+#write.fit(ebFit, file="lmfit_results.txt")
+
+# TopTable to view DEGs -----
+myTopHitsOutcomes <- topTable(ebFit1, adjust ="BH", coef=1, number=40000, sort.by="logFC")
+
+# convert to a tibble
+myTopHitsOutcomes.df <- myTopHitsOutcomes %>%
+  as_tibble(rownames = "geneID")
+
+# Add p-value significance categories
+myTopHitsOutcomes_sig.df <- subset(myTopHitsOutcomes.df, P.Value < 0.05)
+sigfailure <- myTopHitsOutcomes_sig.df$ID
+
+myTopHitsOutcomes_sig.df$FC <- 2^(myTopHitsOutcomes_sig.df$logFC)
+myTopHitsOutcomes_sig.df$neglog10P <- -log10(myTopHitsOutcomes_sig.df$P.Value)
+
+cytotoxic_subset <- subset(myTopHitsOutcomes_sig.df, ID %in% cytotoxic_genes)
+
+# View as table
+# Display as interactive table
+datatable(cytotoxic_subset,
+          options = list(pageLength = 10, scrollX = TRUE),
+          rownames = FALSE)
+
+ggplot(myTopHitsOutcomes_sig.df, aes(x = FC, y = neglog10P)) +
+  geom_point(color = "gray70") +
+  
+  geom_point(data = subset(myTopHitsOutcomes_sig.df, ID %in% cytotoxic_genes),
+             aes(x = FC, y = neglog10P), color = "blue", size = 3) +
+  
+  geom_text(data = subset(myTopHitsOutcomes_sig.df, ID %in% cytotoxic_genes),
+            aes(label = ID), color = "black", vjust = -1, size = 3.5) +
+  
+  xlim(0, 4) + ylim(0, 4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.01), linetype = "dashed") +
+  
+  labs(
+    x = "Fold Change (Failure vs. Cure)",
+    y = "-log10(P.Value)",
+    title = "Volcano Plot Highlighting Cytotoxic Genes"
+  ) +
+  theme_minimal(base_size = 14)
+
+# Make sure this is the full DEG result (not just p < 0.05)
+# myTopHitsOutcomes.df must contain columns: ID, FC, P.Value
+myTopHitsOutcomes.df$neglog10P <- -log10(myTopHitsOutcomes.df$P.Value)
+myTopHitsOutcomes.df$FC <- 2^(myTopHitsOutcomes.df$logFC)
+
+library(ggplot2)
+
+ggplot(myTopHitsOutcomes.df, aes(x = FC, y = neglog10P)) +
+  # Plot all genes (gray)
+  geom_point(color = "gray70") +
+  
+  # Highlight cytotoxic genes with p < 0.05 in blue
+  geom_point(data = subset(myTopHitsOutcomes_sig.df, ID %in% cytotoxic_genes),
+             aes(x = FC, y = neglog10P), color = "blue", size = 3) +
+  
+  # Label the cytotoxic genes
+  geom_text(data = subset(myTopHitsOutcomes_sig.df, ID %in% cytotoxic_genes),
+            aes(label = ID), color = "red", vjust = -1, size = 3.5) +
+  
+  # Axes limits and p-value threshold lines
+  xlim(0, 4) + ylim(0, 4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.01), linetype = "dashed") +
+  
+  labs(
+    x = "Fold Change (Failure vs. Cure)",
+    y = "-log10(P.Value)",
+    title = "Volcano Plot Highlighting Cytotoxic Genes (P < 0.05)"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+## Conclusions
+
+Describe the results in your own words.  Some things to think about:
+
+* What are the key takeaways from the analysis?
+1. Distinct transcriptional signatures differentiate HS and CL lesions.
+2. Within CL, gene expression profiles correlate with treatment outcomes (cure vs. failure).
+3. Cytotoxic genes (e.g., GZMB, PRF1) are highly expressed in failure cases.
+4. Pathway analyses reveal immune activation and suppression patterns relevant to disease state.
+* What types of analyses would you want to do next?
+1. Perform single-cell RNA-seq or deconvolution to resolve cell-type contributions.
+2. Explore longitudinal changes in gene expression over treatment time points.
+3. Apply machine learning to classify responders vs. non-responders.
+
+* Based on your analysis, are there any wet-lab experiments would might priortize?
+1. Validate cytotoxic gene expression (GZMB, GNLY, PRF1) using qPCR or flow cytometry.
+2. Use immunohistochemistry to confirm spatial localization of effector T cells.
+3. Knockdown or overexpression studies in relevant cell lines to test function.
+4. Cytokine assays to test IFNG-driven responses in patient-derived cells.
+
+
+## Session info
+
+The output from running 'sessionInfo' is shown below and details all packages and version necessary to reproduce the results in this report.
+
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
