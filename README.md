@@ -28,11 +28,11 @@ In this analysis, I have worked on recreating the analysis done in the the study
 >Instead of starting from raw FASTQ files, we retrieved **pre-aligned gene-level expression data** from the **ARCHS4** database.
 ---
 ### Key Analytical Steps
-1. Filtering and Normalization : [As per the study - Normalized using the TMM method in EdgeR and genes with < 1 count per million (CPM) in 7 of the samples were filtered out.] 
-2. Multivariate data analysis: [PCA Plot]
-3. Differential Expression: [uNormalized, filtered data were variance-stabilized using the VOOM function in limma and differentially expressed genes were identified with linear modeling using limma (FDR ≤ 0.01; absolute logFC ≥ 1), after correcting for multiple testing using Benjamini-Hochberg]. 
-4. GO Analysis: [GSEABase, Biobase, gprofiler2]
-5. GSEA: [clusterProfiler and msigdbr]
+1. Filtering and Normalization : As per the study - Normalized using the TMM method in EdgeR and genes with < 1 count per million (CPM) in 7 of the samples were filtered out.
+2. Multivariate data analysis: PCA Plot
+3. Differential Expression: Normalized, filtered data were variance-stabilized using the VOOM function in limma and differentially expressed genes were identified with linear modeling using limma (FDR ≤ 0.01; absolute logFC ≥ 1), after correcting for multiple testing using Benjamini-Hochberg. 
+4. GO Analysis: GSEABase, Biobase, gprofiler2
+5. GSEA: clusterProfiler and msigdbr
 ---
 ## Key Findings
 1. Distinct transcriptional signatures differentiate HS and CL lesions.
